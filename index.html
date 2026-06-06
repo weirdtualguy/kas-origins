@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>🧬 Kas Origins — Coin Lineage Explorer</title>
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/mobile.css">
+</head>
+<body>
+  <div class="rate-limit-indicator" id="rateLimitIndicator">
+    <span id="rateLimitStatus">OK</span> | <span id="apiCallCount">0</span>
+  </div>
+
+  <header class="hero">
+    <div class="hero-icon">🧬</div>
+    <h1>Kas Origins</h1>
+    <p class="hero-subtitle">Every coin has a story. Discover where your KAS came from.</p>
+  </header>
+
+  <div class="input-area">
+    <div class="input-row">
+      <input 
+        type="text" 
+        class="input-field" 
+        id="mainInput" 
+        placeholder="Paste TXID or Kaspa address..." 
+        autocomplete="off"
+        enterkeyhint="go"
+      >
+      <button class="btn btn-trace" id="btnTrace">
+        <span class="btn-icon">🔍</span>
+        <span class="btn-text">Trace Origins</span>
+      </button>
+      <button class="btn btn-cancel" id="btnCancel" style="display:none;">
+        Cancel
+      </button>
+    </div>
+  </div>
+
+  <div class="result-panel" id="resultPanel">
+    <div class="empty-state">
+      <div class="empty-icon">🧬</div>
+      <p class="empty-title">Trace Your Coin's Journey</p>
+      <p class="empty-subtitle">Enter a transaction ID or wallet address to discover its complete history — from mining rewards through exchanges to its current destination.</p>
+      <div class="empty-examples">
+        <span class="example-badge" onclick="document.getElementById('mainInput').value='kaspa:qpzpfwcsqsxhxwup26r55fd0ghqlhyugz8cp6y3wxuddc02vcxtjg75pspnwz'">Example: MEXC Address</span>
+        <span class="example-badge" onclick="document.getElementById('mainInput').value='enter_txid_here'">Example: Transaction ID</span>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <p>Kas Origins — Powered by api.kaspa.org</p>
+    <p class="footer-tagline">Blockchain lineage explorer</p>
+  </footer>
+
+  <div class="mobile-action-bar" id="mobileActionBar" style="display:none;">
+    <button class="action-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">
+      <span class="action-icon">⬆</span>
+      <span class="action-label">Top</span>
+    </button>
+    <button class="action-btn" id="btnJumpCoinbase">
+      <span class="action-icon">⛏️</span>
+      <span class="action-label">Origin</span>
+    </button>
+    <button class="action-btn" id="btnJumpExchange">
+      <span class="action-icon">🏦</span>
+      <span class="action-label">Exchange</span>
+    </button>
+    <button class="action-btn" onclick="exportResultsAsCSV()">
+      <span class="action-icon">📊</span>
+      <span class="action-label">Export</span>
+    </button>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/known-addresses.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/rate-limiter.js"></script>
+  <script src="js/behavioral-detection.js"></script>
+  <script src="js/phase-analysis.js"></script>
+  <script src="js/api-helpers.js"></script>
+  <script src="js/trace-engine.js"></script>
+  <script src="js/export.js"></script>
+  <script src="js/ui-renderer.js"></script>
+  <script src="js/ui-interactions.js"></script>
+</body>
+</html>
