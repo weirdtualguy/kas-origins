@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="css/mobile.css">
 </head>
 <body>
-  <div class="rate-limit-indicator" id="rateLimitIndicator">
+  <div class="rate-limit-indicator" id="rateLimitIndicator" style="display:none;">
     <span id="rateLimitStatus">OK</span> | <span id="apiCallCount">0</span>
   </div>
 
@@ -43,20 +43,16 @@
       <div class="empty-icon">🧬</div>
       <p class="empty-title">Trace Your Coin's Journey</p>
       <p class="empty-subtitle">Enter a transaction ID or wallet address to discover its complete history — from mining rewards through exchanges to its current destination.</p>
-      <div class="empty-examples">
-        <span class="example-badge" onclick="document.getElementById('mainInput').value='kaspa:qpzpfwcsqsxhxwup26r55fd0ghqlhyugz8cp6y3wxuddc02vcxtjg75pspnwz'">Example: MEXC Address</span>
-        <span class="example-badge" onclick="document.getElementById('mainInput').value='enter_txid_here'">Example: Transaction ID</span>
-      </div>
     </div>
   </div>
 
   <footer>
-    <p>Kas Origins — Powered by api.kaspa.org</p>
-    <p class="footer-tagline">Blockchain lineage explorer</p>
+    <p>Kas Origins — Coin Lineage Explorer</p>
+    <p class="footer-tagline">Built by <a href="https://github.com/weirdtualguy" style="color:var(--accent);">weirdtualguy</a></p>
   </footer>
 
   <div class="mobile-action-bar" id="mobileActionBar" style="display:none;">
-    <button class="action-btn" onclick="window.scrollTo({top: 0, behavior: 'smooth'})">
+    <button class="action-btn" onclick="window.scrollTo({top:0,behavior:'smooth'})">
       <span class="action-icon">⬆</span>
       <span class="action-label">Top</span>
     </button>
@@ -74,16 +70,6 @@
     </button>
   </div>
 
-  <script src="js/config.js"></script>
-  <script src="js/known-addresses.js"></script>
-  <script src="js/utils.js"></script>
-  <script src="js/rate-limiter.js"></script>
-  <script src="js/behavioral-detection.js"></script>
-  <script src="js/phase-analysis.js"></script>
-  <script src="js/api-helpers.js"></script>
-  <script src="js/trace-engine.js"></script>
-  <script src="js/export.js"></script>
-  <script src="js/ui-renderer.js"></script>
-  <script src="js/ui-interactions.js"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>
