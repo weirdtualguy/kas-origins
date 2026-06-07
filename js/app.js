@@ -1,607 +1,416 @@
 /**
  * Kas Origins - Frontend Application
- * Calls Python backend API for tracing
+ * Works standalone (direct API calls) or with Python backend
  */
 
-// Backend API base URL
-const BACKEND_URL = '';
+// Auto-detect: use Python backend if on localhost, otherwise call API directly
+const IS_LOCALHOST = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+const API_BASE = 'https://api.kaspa.org';
+const BACKEND_URL = IS_LOCALHOST ? '' : null;
 
+let apiCallCount = 0;
 let multiTraceResults = [];
 let activeTraceIndex = 0;
 let expandedSteps = new Set();
 let currentAbortController = null;
 
-// ========== API CALLS ==========
+// ========== KNOWN ADDRESSES ==========
 
-async function traceAPI(input) {
-    const controller = new AbortController();
-    currentAbortController = controller;
-    
-    try {
-        const response = await fetch(`${BACKEND_URL}/api/trace`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ input: input }),
-            signal: controller.signal
-        });
-        
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.error || 'Trace failed');
-        }
-        
-        return await response.json();
-    } catch (e) {
-        if (e.name === 'AbortError') throw e;
-        throw e;
+const KNOWN_ADDRESSES = {
+  "kaspa:qpzpfwcsqsxhxwup26r55fd0ghqlhyugz8cp6y3wxuddc02vcxtjg75pspnwz": { name: "MEXC", type: "exchange", category: "cex" },
+  "kaspa:qrelgny7sr3vahq69yykxx36m65gvmhryxrlwngfzgu8xkdslum2yxjp3ap8m": { name: "Gate.io", type: "exchange", category: "cex" },
+  "kaspa:qzadxjufntvckxrvy76pyhvtkuu8lg5ryz252aglmhlyv27pxqplksshzuu9m": { name: "KuCoin 1", type: "exchange", category: "cex" },
+  "kaspa:qr8k05f9n6xtrd0eex5lr6878mc5n7dgrtn8xv3frfvuxgfchx9077jtz5tsk": { name: "KuCoin 2", type: "exchange", category: "cex" },
+  "kaspa:qpq94ntnvy8p9q6wrdwtn37xtspgashrydc0kuu8ctpyxulmh0wlxh2807zdh": { name: "KuCoin 3", type: "exchange", category: "cex" },
+  "kaspa:qq3k4du6wf2g26j7ds6fqmgtgavgm3zy676wntp2e52nsuns2n4s6xkndmx0y": { name: "KuCoin 4", type: "exchange", category: "cex" },
+  "kaspa:qrvum29vk365g0zcd5gx3c7h829etfq2ytdmscjzw4zw04fjfnprcg9c3tges": { name: "Bybit", type: "exchange", category: "cex" },
+  "kaspa:qzxrs8gxjgk2q84wlt3xfd057ntws73fptalhy84g85zqfu5lcemvpu04vj3w": { name: "Uphold 1", type: "exchange", category: "cex" },
+  "kaspa:qr7vrlhgekw9efxgfq09ca3wqcxlslgxndcpk77pguu2usaa9aa27lhuunewj": { name: "Uphold 2", type: "exchange", category: "cex" },
+  "kaspa:qqfxn597v5c23td4asz99ky52sha8l2ypq8kmrsqxcu7skhdunncjgup0hdys": { name: "Bitvavo 1", type: "exchange", category: "cex" },
+  "kaspa:qzxs23g7txh3wq9d0t2z0hluhsflvzpf6d0yfum830ppumgtxa5d7zqca8r67": { name: "Bitvavo 2", type: "exchange", category: "cex" },
+  "kaspa:qz4kt3t0qzpmpcgle28mgudu6lpu0fel6rgn0y2p808l8em7gd2exnss8cr2t": { name: "Bitvavo 3", type: "exchange", category: "cex" },
+  "kaspa:qphfy7yfwyj7uqw2q6v924q6xcsstfhdz70cdm7ewnzqt98r2x6jydujg6gle": { name: "Kraken", type: "exchange", category: "cex" },
+  "kaspa:qqywx2wszmnrsu0mzgav85rdwvzangfpdj9j3ady9jpr7hu4u8c2wl9wqgd6j": { name: "Bitget", type: "exchange", category: "cex" },
+  "kaspa:qyp90geyzyp56p4zqd87flxrwd64r557r2cwkuwxzuq9zxehmswcg8g54jmeu7p": { name: "PionexUS", type: "exchange", category: "cex" },
+  "kaspa:qpqpyavkqnp60q6t4sfctz4yp3n0ct963z65rxkd5ft32vkehnd3wx8jqctr2": { name: "CoinEx", type: "exchange", category: "cex" },
+  "kaspa:qq3wrlkeustmu5uuh6r3mrmkly88x3mg4wajc7ktxmqfnqptkfxaqgu47jq8n": { name: "CoinEx Hot Wallet", type: "exchange", category: "cex" },
+};
+
+function lookupKnownAddress(address) {
+  if (!address) return null;
+  return KNOWN_ADDRESSES[address] || null;
+}
+
+function resolveAddressDisplay(address) {
+  const known = lookupKnownAddress(address);
+  if (known) return `${known.type === 'exchange' ? '🏦' : '📋'} ${known.name}`;
+  return address ? `${address.substring(0, 18)}...` : 'Unknown';
+}
+
+function isExchangeAddress(address) {
+  const info = lookupKnownAddress(address);
+  return info?.type === 'exchange';
+}
+
+// ========== UTILS ==========
+
+function sompiToKAS(s) { const n = typeof s === 'string' ? parseInt(s) : s; return isNaN(n) ? '0' : (n / 1e8).toFixed(6); }
+function formatTime(ts) { if (!ts) return '?'; return new Date(parseInt(ts)).toLocaleString(); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function isValidKaspaAddress(a) { return a && a !== 'Unknown' && /^kaspa:[a-z0-9]{61,63}$/.test(a); }
+
+// ========== RATE LIMITER ==========
+
+const RATE_LIMIT = { minDelay: 100, maxDelay: 5000, backoffFactor: 2, maxRetries: 3, callsPerSecond: 8 };
+let lastApiCallTime = 0;
+let consecutiveRateLimits = 0;
+let rateLimitWindowStart = Date.now();
+let callsInCurrentWindow = 0;
+
+async function rateLimitedFetch(url, options = {}, retryCount = 0) {
+  if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  
+  const now = Date.now();
+  if (now - rateLimitWindowStart > 1000) { rateLimitWindowStart = now; callsInCurrentWindow = 0; }
+  if (callsInCurrentWindow >= RATE_LIMIT.callsPerSecond) {
+    const waitTime = 1000 - (now - rateLimitWindowStart);
+    if (waitTime > 0) await sleep(waitTime);
+    rateLimitWindowStart = Date.now(); callsInCurrentWindow = 0;
+  }
+  
+  const timeSinceLastCall = now - lastApiCallTime;
+  if (timeSinceLastCall < RATE_LIMIT.minDelay) await sleep(RATE_LIMIT.minDelay - timeSinceLastCall);
+  if (consecutiveRateLimits > 0) {
+    const backoffDelay = Math.min(RATE_LIMIT.minDelay * Math.pow(RATE_LIMIT.backoffFactor, consecutiveRateLimits), RATE_LIMIT.maxDelay);
+    await sleep(backoffDelay);
+  }
+  
+  lastApiCallTime = Date.now(); callsInCurrentWindow++; apiCallCount++;
+  
+  try {
+    const response = await fetch(url, options);
+    if (response.status === 429) {
+      consecutiveRateLimits++;
+      if (retryCount < RATE_LIMIT.maxRetries) {
+        await sleep(2000 * (retryCount + 1));
+        return rateLimitedFetch(url, options, retryCount + 1);
+      }
+      throw new Error('Rate limit exceeded');
     }
+    if (response.status === 503) {
+      if (retryCount < RATE_LIMIT.maxRetries) {
+        await sleep(3000 * (retryCount + 1));
+        return rateLimitedFetch(url, options, retryCount + 1);
+      }
+      throw new Error('Service unavailable');
+    }
+    if (consecutiveRateLimits > 0) consecutiveRateLimits = Math.max(0, consecutiveRateLimits - 1);
+    return response;
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
+    if (retryCount < RATE_LIMIT.maxRetries) {
+      await sleep(1000 * (retryCount + 1));
+      return rateLimitedFetch(url, options, retryCount + 1);
+    }
+    throw error;
+  }
 }
 
-// ========== UI HELPERS ==========
+// ========== TRACE LOGIC (ported from original JS) ==========
 
-function showToast(msg) {
-    const existing = document.querySelector('.toast-notification');
-    if (existing) existing.remove();
+function isCoinbaseTransaction(tx) {
+  const hasNoInputs = !tx.inputs || tx.inputs.length === 0;
+  const singleEmptyInput = tx.inputs?.length === 1 && !tx.inputs[0].previous_outpoint_hash && !tx.inputs[0].signature_script;
+  const coinbaseMarker = tx.inputs?.[0]?.previous_outpoint_hash === '0000000000000000000000000000000000000000000000000000000000000000';
+  return hasNoInputs || singleEmptyInput || coinbaseMarker;
+}
+
+async function traceLifecycleForMulti(txId, outputIndex, signal, autoContinue) {
+  const allLifecycle = [];
+  const globalVisited = new Set();
+  let currentTxId = txId;
+  let currentIndex = outputIndex;
+  let totalHops = 0;
+  const maxTotalHops = 100;
+  let segmentNumber = 0;
+  let fastPathHopsSaved = 0;
+  let behavioralFastPathUsed = false;
+
+  while (currentTxId && totalHops < maxTotalHops) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
     
-    const t = document.createElement('div');
-    t.className = 'toast-notification';
-    t.style.cssText = `
-        position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
-        background:var(--surface);border:1px solid var(--accent);
-        color:var(--text);padding:0.5rem 1rem;border-radius:12px;
-        font-size:0.8rem;z-index:2000;
-    `;
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(() => t.remove(), 2500);
+    segmentNumber++;
+    const segmentLifecycle = [];
+    const segmentVisited = new Set();
+    let backwardTxId = currentTxId;
+    let backwardIndex = currentIndex;
+    let originFound = false;
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    while (!originFound && attempts < maxAttempts && totalHops < maxTotalHops) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      attempts++; totalHops++;
+      const key = `${backwardTxId}:${backwardIndex}`;
+      if (segmentVisited.has(key) || globalVisited.has(key)) break;
+      segmentVisited.add(key); globalVisited.add(key);
+
+      const res = await rateLimitedFetch(`${API_BASE}/transactions/${backwardTxId}?inputs=true&outputs=true&resolve_previous_outpoints=light`, { signal });
+      if (!res.ok) break;
+      const tx = await res.json();
+
+      const outputs = tx.outputs || [];
+      if (backwardIndex >= outputs.length) {
+        segmentLifecycle.unshift({ txId: backwardTxId, type: 'dead_end', amount: 0, address: 'Invalid_Index', blockTime: tx.block_time, blockHash: tx.block_hash?.[0] || null, isCoinbase: false });
+        originFound = true; break;
+      }
+
+      const input = tx.inputs?.[backwardIndex];
+      
+      if (!input || !input.previous_outpoint_hash) {
+        const isCoinbase = isCoinbaseTransaction(tx);
+        const outputAddress = outputs[backwardIndex]?.script_public_key_address || 'Unknown';
+        
+        segmentLifecycle.unshift({ txId: backwardTxId, type: isCoinbase ? 'coinbase' : 'dead_end', amount: outputs[backwardIndex]?.amount || 0, address: outputAddress, blockTime: tx.block_time, blockHash: tx.block_hash?.[0] || null, isCoinbase, isExchangeAddress: isExchangeAddress(outputAddress) });
+        originFound = true;
+        if (!isCoinbase && outputs[backwardIndex]?.script_public_key_address) segmentLifecycle[0].continueAddress = outputs[backwardIndex].script_public_key_address;
+        break;
+      }
+
+      const prevAddress = input.previous_outpoint_address || 'Unknown';
+      segmentLifecycle.unshift({ txId: backwardTxId, type: 'spend', amount: input.previous_outpoint_amount || 0, address: prevAddress, blockTime: tx.block_time, blockHash: tx.block_hash?.[0] || null, isExchangeAddress: isExchangeAddress(prevAddress) });
+
+      backwardTxId = input.previous_outpoint_hash;
+      backwardIndex = parseInt(input.previous_outpoint_index) || 0;
+      await sleep(30);
+    }
+
+    if (segmentLifecycle.length > 0) {
+      if (allLifecycle.length > 0) allLifecycle.push({ type: 'separator' });
+      allLifecycle.push(...segmentLifecycle);
+    }
+
+    if (!autoContinue) break;
+    
+    const lastStep = segmentLifecycle[0];
+    if (lastStep && lastStep.continueAddress && !lastStep.isCoinbase && totalHops < maxTotalHops) {
+      let foundNext = false;
+      const exchangeInfo = lookupKnownAddress(lastStep.continueAddress);
+      
+      if (exchangeInfo && exchangeInfo.type === 'exchange') {
+        try {
+          const res = await rateLimitedFetch(`${API_BASE}/transactions/${lastStep.txId}?inputs=true&outputs=true&resolve_previous_outpoints=light`, { signal });
+          const tx = await res.json();
+          const externalInputs = (tx.inputs || []).filter(inp => inp.previous_outpoint_hash && inp.previous_outpoint_address && !isExchangeAddress(inp.previous_outpoint_address));
+          
+          if (externalInputs.length > 0) {
+            currentTxId = externalInputs[0].previous_outpoint_hash;
+            currentIndex = parseInt(externalInputs[0].previous_outpoint_index) || 0;
+            foundNext = true;
+            fastPathHopsSaved += 10;
+            allLifecycle.push({ type: 'message', text: `⚡ Fast-path: Skipped ${exchangeInfo.name} internal transfers` });
+          }
+        } catch(e) {}
+      }
+      
+      if (!foundNext) {
+        try {
+          const res = await rateLimitedFetch(`${API_BASE}/addresses/${lastStep.continueAddress}/full-transactions-page?limit=20`, { signal });
+          const txs = await res.json();
+          if (Array.isArray(txs)) {
+            for (const histTx of txs) {
+              if (histTx.outputs && !foundNext) {
+                for (let oi = 0; oi < histTx.outputs.length; oi++) {
+                  const out = histTx.outputs[oi];
+                  const outAddr = out.script_public_key_address || '';
+                  const key = `${histTx.transaction_id}:${oi}`;
+                  const deadEndTime = parseInt(lastStep.blockTime) || 0;
+                  const histTime = parseInt(histTx.block_time) || 0;
+                  if (outAddr === lastStep.continueAddress && parseInt(out.amount) > 0 && !globalVisited.has(key) && (histTime === 0 || deadEndTime === 0 || histTime <= deadEndTime)) {
+                    currentTxId = histTx.transaction_id; currentIndex = oi; foundNext = true;
+                    allLifecycle.push({ type: 'message', text: '🔗 Continued via same address' }); break;
+                  }
+                }
+              }
+            }
+          }
+        } catch(e) {}
+      }
+
+      if (!foundNext) { allLifecycle.push({ type: 'message', text: '🔚 All strategies exhausted' }); break; }
+    } else {
+      break;
+    }
+    await sleep(50);
+  }
+
+  const realSteps = allLifecycle.filter(s => s.type !== 'separator' && s.type !== 'message');
+  realSteps.sort((a, b) => (parseInt(a.blockTime) || 0) - (parseInt(b.blockTime) || 0));
+
+  return {
+    steps: realSteps, allLifecycle,
+    foundCoinbase: realSteps.some(s => s.type === 'coinbase' || s.isCoinbase),
+    totalHops, segments: segmentNumber,
+    uniqueAddresses: new Set(realSteps.map(s => s.address)).size,
+    fastPathHopsSaved, usedFastPath: fastPathHopsSaved > 0,
+    behavioralFastPathUsed
+  };
 }
+
+async function traceFromAddress(address, signal) {
+  const panel = document.getElementById('resultPanel');
+  updateProgress('Analyzing UTXOs...', `Looking up address: ${address}`, 20);
+  
+  try {
+    const res = await rateLimitedFetch(`${API_BASE}/addresses/${address}/utxos`, { signal });
+    const utxos = await res.json();
+    
+    if (!Array.isArray(utxos) || utxos.length === 0) {
+      panel.innerHTML = '<p style="color:var(--muted);">No UTXOs found for this address.</p>';
+      return;
+    }
+    
+    const selected = utxos.slice(0, 3);
+    updateProgress('Tracing...', `${selected.length} UTXOs selected`, 50);
+    
+    multiTraceResults = [];
+    for (const utxo of selected) {
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      const txId = utxo.outpoint?.transactionId || '';
+      const idx = utxo.outpoint?.index || 0;
+      const result = await traceLifecycleForMulti(txId, idx, signal, true);
+      result.input = `${address} (UTXO)`;
+      result.inputType = 'address_utxo';
+      multiTraceResults.push(result);
+      await sleep(100);
+    }
+    
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    renderMultiTraceResults(multiTraceResults);
+  } catch(e) { 
+    if (e.name !== 'AbortError') panel.innerHTML = `<p style="color:#f87171;">Error: ${e.message}</p>`;
+  }
+}
+
+async function traceLifecycleSingle(txId, outputIndex, signal) {
+  const result = await traceLifecycleForMulti(txId, outputIndex, signal, true);
+  result.input = txId;
+  result.inputType = 'txid';
+  multiTraceResults = [result];
+  renderMultiTraceResults([result]);
+}
+
+// ========== UI ==========
 
 function updateProgress(message, detail, percentage) {
-    const panel = document.getElementById('resultPanel');
-    panel.innerHTML = `
-        <div class="progress-container">
-            <div class="progress-spinner"></div>
-            <div class="progress-message">${message}</div>
-            ${detail ? `<div class="progress-detail">${detail}</div>` : ''}
-            <div class="progress-bar-container">
-                <div class="progress-bar" style="width:${percentage}%"></div>
-            </div>
-            <div class="progress-stats">
-                <div class="progress-stat">
-                    <div class="progress-stat-value" id="progressApiCalls">0</div>
-                    <div>API Calls</div>
-                </div>
-            </div>
+  const panel = document.getElementById('resultPanel');
+  panel.innerHTML = `<div class="progress-container"><div class="progress-spinner"></div><div class="progress-message">${message}</div>${detail ? `<div class="progress-detail">${detail}</div>` : ''}<div class="progress-bar-container"><div class="progress-bar" style="width:${percentage}%"></div></div><div class="progress-stats"><div class="progress-stat"><div class="progress-stat-value">${apiCallCount}</div><div>API Calls</div></div></div></div>`;
+}
+
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--accent);color:var(--text);padding:0.5rem 1rem;border-radius:12px;font-size:0.8rem;z-index:2000;';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2500);
+}
+
+function renderMultiTraceResults(results) {
+  const panel = document.getElementById('resultPanel');
+  if (!results.length) return;
+  
+  const result = results[0];
+  const steps = result.steps || [];
+  const coinbaseStep = steps.find(s => s.type === 'coinbase' || s.isCoinbase);
+  const firstStep = steps[0] || {};
+  const lastStep = steps[steps.length - 1] || {};
+  
+  let html = `<div class="export-bar"><button class="btn-export-sm" onclick="exportJSON()">📋 JSON</button><span style="font-size:0.55rem;color:var(--muted);margin-left:auto;">API: ${apiCallCount}</span></div>`;
+  
+  html += `<div class="coin-story">
+    <div class="story-header"><span class="story-title">🧬 Coin Story</span>
+      <div class="confidence-badge">${result.foundCoinbase ? '✅' : '⚠️'} ${result.foundCoinbase ? 'Coinbase Found' : 'Partial Trace'}</div>
+    </div>
+    <div class="story-stats">
+      <div class="story-stat"><div class="story-stat-value">${steps.length}</div><div class="story-stat-label">Transfers</div></div>
+      <div class="story-stat"><div class="story-stat-value" style="color:${result.foundCoinbase ? '#22c55e' : '#f59e0b'};">${result.foundCoinbase ? '✅' : '❌'}</div><div class="story-stat-label">Coinbase</div></div>
+      <div class="story-stat"><div class="story-stat-value">${sompiToKAS(lastStep.amount)}</div><div class="story-stat-label">Amount (KAS)</div></div>
+    </div>
+  </div>`;
+  
+  html += '<div class="journey-timeline">';
+  steps.forEach((step, i) => {
+    const badge = step.type === 'coinbase' || step.isCoinbase ? '⛏️ Mining' : step.isExchangeAddress ? '🏦 Exchange' : '💸 Transfer';
+    const badgeClass = step.type === 'coinbase' || step.isCoinbase ? 'badge-mining' : step.isExchangeAddress ? 'badge-exchange' : 'badge-personal';
+    
+    html += `<div class="journey-step ${step.type === 'coinbase' ? 'mining' : step.isExchangeAddress ? 'exchange' : 'personal'}">
+      <div class="step-card">
+        <div class="step-card-header">
+          <span class="step-type-badge ${badgeClass}">${badge}</span>
+          <span class="step-amount">${sompiToKAS(step.amount)} KAS</span>
         </div>
-    `;
-}
-
-// ========== RENDER FUNCTIONS ==========
-
-function renderResults(data) {
-    const panel = document.getElementById('resultPanel');
-    multiTraceResults = data.traces || [];
-    expandedSteps = new Set();
-    activeTraceIndex = 0;
-    
-    if (multiTraceResults.length === 0) {
-        panel.innerHTML = `
-            <div class="empty-state">
-                <p style="color:var(--muted);">${data.message || 'No results found.'}</p>
-            </div>
-        `;
-        return;
-    }
-    
-    let html = renderExportBar(data.api_calls || 0);
-    
-    if (multiTraceResults.length > 1) {
-        html += renderTraceNav();
-    }
-    
-    html += renderTraceContent(multiTraceResults[0], 0);
-    panel.innerHTML = html;
-    
-    // Show mobile action bar
-    const mobileBar = document.getElementById('mobileActionBar');
-    if (mobileBar) mobileBar.style.display = 'flex';
-    
-    setupMobileActions();
-}
-
-function renderExportBar(apiCalls) {
-    return `
-        <div class="export-bar">
-            <button class="btn-export-sm" onclick="exportResultsAsCSV()">📊 CSV</button>
-            <button class="btn-export-sm" onclick="exportResultsAsJSON()">📋 JSON</button>
-            <button class="btn-export-sm" onclick="exportResultsAsText()">📄 Text</button>
-            <span style="font-size:0.55rem;color:var(--muted);margin-left:auto;">API: ${apiCalls} calls</span>
+        <div class="step-details">
+          <div class="step-detail-row">
+            <span class="step-detail-label">Address</span>
+            <span class="step-detail-value">${resolveAddressDisplay(step.address)}</span>
+          </div>
+          <div class="step-detail-row">
+            <span class="step-detail-label">Time</span>
+            <span class="step-detail-value">${formatTime(step.blockTime)}</span>
+          </div>
         </div>
-    `;
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  
+  panel.innerHTML = html;
 }
 
-function renderTraceNav() {
-    let html = '<div class="trace-navigation">';
-    html += `<button class="nav-btn" onclick="navigateTrace(-1)" ${activeTraceIndex === 0 ? 'disabled' : ''}>← Prev</button>`;
-    html += '<div class="trace-dots">';
-    
-    multiTraceResults.forEach((result, i) => {
-        let cls = 'trace-dot';
-        if (i === activeTraceIndex) cls += ' active';
-        if (result.found_coinbase) cls += ' coinbase';
-        html += `<div class="${cls}" onclick="switchToTrace(${i})"></div>`;
-    });
-    
-    html += '</div>';
-    html += `<button class="nav-btn" onclick="navigateTrace(1)" ${activeTraceIndex === multiTraceResults.length - 1 ? 'disabled' : ''}>Next →</button>`;
-    html += '</div>';
-    return html;
+function exportJSON() {
+  const data = { export_time: new Date().toISOString(), api_calls: apiCallCount, traces: multiTraceResults };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kas-origins-${Date.now()}.json`; a.click();
+  showToast('JSON exported');
 }
 
-function renderTraceContent(result, index) {
-    if (result.error) {
-        return `<p style="color:#f87171;">❌ ${result.error}</p>`;
-    }
-    
-    const steps = result.steps || [];
-    if (steps.length === 0) {
-        return '<p style="color:var(--muted);">No steps found.</p>';
-    }
-    
-    let html = renderCoinStory(result);
-    html += renderJourneyTimeline(result);
-    
-    const phases = result.phases || [];
-    if (phases.length > 1) {
-        html += renderPhaseSummary(phases);
-    }
-    
-    return html;
-}
-
-function renderCoinStory(result) {
-    const storyPath = result.story_path || [];
-    const confidence = result.confidence || 0;
-    const confidenceLabel = result.confidence_label || 'Unknown';
-    const steps = result.steps || [];
-    
-    const firstStep = steps[0] || {};
-    const lastStep = steps[steps.length - 1] || {};
-    
-    let totalSpan = 0;
-    if (firstStep.block_time && lastStep.block_time) {
-        totalSpan = Math.round((parseInt(lastStep.block_time) - parseInt(firstStep.block_time)) / 86400000);
-    }
-    
-    // Count unique exchanges
-    const exchanges = new Set();
-    steps.forEach(s => {
-        if (s.is_exchange_address && s.address) {
-            exchanges.add(s.address_display || s.address);
-        }
-    });
-    
-    return `
-        <div class="coin-story">
-            <div class="story-header">
-                <span class="story-title">🧬 Coin Story</span>
-                <div class="confidence-badge">
-                    <span>Confidence</span>
-                    <div class="confidence-meter">
-                        ${renderConfidenceMeter(confidence)}
-                    </div>
-                    <span style="color:var(--accent);">${confidence}%</span>
-                    <span style="color:var(--muted);font-size:0.6rem;">${confidenceLabel}</span>
-                </div>
-            </div>
-            
-            <div class="story-path">
-                ${storyPath.map((node, i) => `
-                    <div class="path-node ${getNodeClass(node.type)}">
-                        <div class="path-node-icon">${node.icon || '❓'}</div>
-                        <div class="path-node-type">${node.type || 'unknown'}</div>
-                        ${node.exchange_name ? `<div class="path-node-name">${node.exchange_name}</div>` : ''}
-                    </div>
-                    ${i < storyPath.length - 1 ? '<div class="path-arrow">→</div>' : ''}
-                `).join('')}
-            </div>
-            
-            <div class="story-stats">
-                <div class="story-stat">
-                    <div class="story-stat-value">${steps.length}</div>
-                    <div class="story-stat-label">Transfers</div>
-                </div>
-                <div class="story-stat">
-                    <div class="story-stat-value">${exchanges.size}</div>
-                    <div class="story-stat-label">Exchanges</div>
-                </div>
-                <div class="story-stat">
-                    <div class="story-stat-value">${totalSpan}d</div>
-                    <div class="story-stat-label">Age</div>
-                </div>
-                <div class="story-stat">
-                    <div class="story-stat-value">${result.unique_addresses || 0}</div>
-                    <div class="story-stat-label">Addresses</div>
-                </div>
-                <div class="story-stat">
-                    <div class="story-stat-value">${lastStep.amount_kas || '0'}</div>
-                    <div class="story-stat-label">Amount</div>
-                </div>
-                ${result.used_fast_path ? `
-                <div class="story-stat">
-                    <div class="story-stat-value" style="color:${result.behavioral_fast_path_used ? 'var(--yellow)' : 'var(--purple)'};">⚡</div>
-                    <div class="story-stat-label">Fast-Path</div>
-                </div>` : ''}
-            </div>
-        </div>
-    `;
-}
-
-function renderConfidenceMeter(confidence) {
-    const segments = 10;
-    const filled = Math.round(confidence / 10);
-    let html = '';
-    for (let i = 0; i < segments; i++) {
-        html += `<div class="confidence-segment ${i < filled ? 'filled' : ''}"></div>`;
-    }
-    return html;
-}
-
-function renderJourneyTimeline(result) {
-    const steps = result.steps || [];
-    
-    let html = '<div class="journey-timeline">';
-    
-    steps.forEach((step, i) => {
-        const phaseType = getStepPhase(step);
-        const badgeClass = `badge-${phaseType}`;
-        const badgeLabel = getStepBadge(step);
-        const isExpanded = expandedSteps.has(i);
-        
-        html += `
-            <div class="journey-step ${phaseType}" id="journeyStep${i}">
-                <div class="step-card" onclick="toggleStep(${i})">
-                    <div class="step-card-header">
-                        <span class="step-type-badge ${badgeClass}">${badgeLabel}</span>
-                        <span class="step-amount">${step.amount_kas || '0'} KAS</span>
-                    </div>
-                    
-                    <div class="step-details">
-                        <div class="step-detail-row">
-                            <span class="step-detail-label">Address</span>
-                            <span class="step-detail-value copy-inline" onclick="event.stopPropagation();copyText('${step.address || ''}')">
-                                ${step.address_display || step.address?.substring(0, 18) || 'Unknown'}
-                            </span>
-                        </div>
-                        <div class="step-detail-row">
-                            <span class="step-detail-label">Time</span>
-                            <span class="step-detail-value">${step.block_time_formatted || '?'}</span>
-                        </div>
-                    </div>
-                    
-                    <button class="step-expand-btn" onclick="event.stopPropagation();toggleStep(${i})">
-                        ${isExpanded ? '▲ Hide details' : '▼ Show details'}
-                    </button>
-                    
-                    <div class="step-expanded-content ${isExpanded ? 'visible' : ''}" id="stepExpanded${i}">
-                        <div class="step-detail-row">
-                            <span class="step-detail-label">Transaction</span>
-                            <span class="step-detail-value copy-inline" onclick="copyText('${step.tx_id || ''}')">
-                                ${(step.tx_id || '').substring(0, 20)}...
-                            </span>
-                        </div>
-                        ${step.block_hash ? `
-                        <div class="step-detail-row">
-                            <span class="step-detail-label">Block</span>
-                            <span class="step-detail-value">${step.block_hash.substring(0, 16)}...</span>
-                        </div>` : ''}
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-    
-    html += '</div>';
-    
-    // Exchange clusters
-    const ranges = findExchangeRanges(steps);
-    ranges.forEach(range => {
-        html += renderExchangeCluster(range, steps);
-    });
-    
-    return html;
-}
-
-function renderExchangeCluster(range, steps) {
-    const exchangeSteps = steps.slice(range.start, range.end + 1);
-    const names = new Set();
-    exchangeSteps.forEach(s => {
-        if (s.is_exchange_address && s.address_display) {
-            names.add(s.address_display);
-        }
-    });
-    
-    const hiddenCount = range.end - range.start - 1;
-    
-    return `
-        <div class="exchange-cluster" style="margin:1rem 0;">
-            <div class="exchange-cluster-header">
-                <span class="exchange-cluster-icon">🏦</span>
-                <span class="exchange-cluster-name">${Array.from(names).join(', ') || 'Exchange Cluster'}</span>
-            </div>
-            <div class="exchange-cluster-stats">
-                ${exchangeSteps.length} steps • ${hiddenCount > 0 ? `${hiddenCount} internal transfers` : 'Fast-path enabled'}
-            </div>
-        </div>
-    `;
-}
-
-function renderPhaseSummary(phases) {
-    let html = `
-        <div style="margin:1rem 0;">
-            <div style="font-size:0.65rem;color:var(--muted);margin-bottom:0.3rem;">📊 Journey Phases</div>
-            <div class="phase-timeline">
-    `;
-    
-    phases.forEach((phase, i) => {
-        html += `
-            <div class="phase-item phase-${phase.type}">
-                ${phase.label}
-                <span class="phase-step-range">Steps ${phase.start_idx + 1}-${phase.end_idx + 1}</span>
-            </div>
-        `;
-        if (i < phases.length - 1) {
-            html += '<div class="phase-arrow">→</div>';
-        }
-    });
-    
-    html += '</div></div>';
-    return html;
-}
-
-// ========== HELPER FUNCTIONS ==========
-
-function getNodeClass(type) {
-    const map = { 'mining': 'mining', 'exchange': 'exchange' };
-    return map[type] || 'personal';
-}
-
-function getStepPhase(step) {
-    if (step.is_coinbase) return 'mining';
-    if (step.is_exchange_address || step.is_behavioral_exchange) return 'exchange';
-    return 'personal';
-}
-
-function getStepBadge(step) {
-    if (step.is_coinbase) return '⛏️ Mining Reward';
-    if (step.is_exchange_address) return '🏦 Exchange';
-    if (step.is_behavioral_exchange) return '🧠 Exchange Activity';
-    return '💸 Transfer';
-}
-
-function findExchangeRanges(steps) {
-    const ranges = [];
-    let current = null;
-    
-    steps.forEach((step, i) => {
-        const isExchange = step.is_exchange_address || step.is_behavioral_exchange;
-        if (isExchange) {
-            if (!current) current = { start: i, end: i };
-            else current.end = i;
-        } else {
-            if (current && current.end - current.start >= 1) {
-                ranges.push({...current});
-            }
-            current = null;
-        }
-    });
-    
-    if (current && current.end - current.start >= 1) {
-        ranges.push(current);
-    }
-    
-    return ranges;
-}
-
-function toggleStep(index) {
-    if (expandedSteps.has(index)) {
-        expandedSteps.delete(index);
-    } else {
-        expandedSteps.add(index);
-    }
-    
-    const content = document.getElementById(`stepExpanded${index}`);
-    if (content) {
-        content.classList.toggle('visible');
-    }
-    
-    const step = document.getElementById(`journeyStep${index}`);
-    const btn = step?.querySelector('.step-expand-btn');
-    if (btn) {
-        btn.textContent = expandedSteps.has(index) ? '▲ Hide details' : '▼ Show details';
-    }
-}
-
-function copyText(text) {
-    navigator.clipboard.writeText(text).then(() => showToast('Copied! 📋'));
-}
-
-function setupMobileActions() {
-    const result = multiTraceResults[activeTraceIndex];
-    if (!result) return;
-    
-    const steps = result.steps || [];
-    
-    const btnOrigin = document.getElementById('btnJumpCoinbase');
-    if (btnOrigin) {
-        const idx = steps.findIndex(s => s.is_coinbase);
-        btnOrigin.style.display = idx >= 0 ? 'flex' : 'none';
-        if (idx >= 0) {
-            btnOrigin.onclick = () => document.getElementById(`journeyStep${idx}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-    }
-    
-    const btnExchange = document.getElementById('btnJumpExchange');
-    if (btnExchange) {
-        const idx = steps.findIndex(s => s.is_exchange_address);
-        btnExchange.style.display = idx >= 0 ? 'flex' : 'none';
-        if (idx >= 0) {
-            btnExchange.onclick = () => document.getElementById(`journeyStep${idx}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-    }
-}
-
-// ========== NAVIGATION ==========
-
-function switchToTrace(index) {
-    activeTraceIndex = index;
-    expandedSteps = new Set();
-    
-    const panel = document.getElementById('resultPanel');
-    let html = renderExportBar(multiTraceResults.length > 0 ? '?' : '0');
-    
-    if (multiTraceResults.length > 1) {
-        html += renderTraceNav();
-    }
-    
-    html += renderTraceContent(multiTraceResults[index], index);
-    panel.innerHTML = html;
-    
-    setupMobileActions();
-    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-function navigateTrace(dir) {
-    const newIdx = activeTraceIndex + dir;
-    if (newIdx >= 0 && newIdx < multiTraceResults.length) {
-        switchToTrace(newIdx);
-    }
-}
-
-// ========== EXPORT ==========
-
-function exportResultsAsCSV() {
-    if (!multiTraceResults.length) { showToast('No results'); return; }
-    
-    let csv = 'Trace #,Phase,TX ID,Type,Amount (KAS),Address,Block Time,Is Coinbase,FastPath\n';
-    multiTraceResults.forEach((r, ti) => {
-        (r.steps || []).forEach((s, si) => {
-            const phase = (r.phases || []).find(p => si >= p.start_idx && si <= p.end_idx);
-            csv += `"${ti+1}","${phase?.label || ''}","${s.tx_id}","${s.is_coinbase ? 'Mining' : 'Spent'}","${s.amount_kas}","${s.address}","${s.block_time_formatted}","${s.is_coinbase ? 'Yes' : 'No'}","${r.used_fast_path ? 'Yes' : 'No'}"\n`;
-        });
-    });
-    
-    downloadFile(csv, `kas-origins-${Date.now()}.csv`, 'text/csv');
-    showToast('CSV exported');
-}
-
-function exportResultsAsJSON() {
-    if (!multiTraceResults.length) { showToast('No results'); return; }
-    
-    const data = {
-        export_time: new Date().toISOString(),
-        total_traces: multiTraceResults.length,
-        traces: multiTraceResults
-    };
-    
-    downloadFile(JSON.stringify(data, null, 2), `kas-origins-${Date.now()}.json`, 'application/json');
-    showToast('JSON exported');
-}
-
-function exportResultsAsText() {
-    if (!multiTraceResults.length) { showToast('No results'); return; }
-    
-    let text = '═══════════════════\n  KAS ORIGINS REPORT\n═══════════════════\n\n';
-    
-    multiTraceResults.forEach((r, i) => {
-        text += `📊 TRACE #${i+1}\n${'─'.repeat(30)}\n`;
-        text += `Confidence: ${r.confidence}% (${r.confidence_label})\n`;
-        text += `Coinbase: ${r.found_coinbase ? '✅ Yes' : '❌ No'}\n`;
-        text += `Fast-Path: ${r.used_fast_path ? '⚡ Yes' : 'No'}\n\n`;
-        
-        (r.steps || []).forEach((s, si) => {
-            text += `  Step ${si+1}: ${s.amount_kas} KAS | ${s.address_display}\n`;
-            text += `  TX: ${s.tx_id}\n`;
-            text += `  Time: ${s.block_time_formatted}\n\n`;
-        });
-    });
-    
-    downloadFile(text, `kas-origins-${Date.now()}.txt`, 'text/plain');
-    showToast('Text exported');
-}
-
-function downloadFile(content, filename, mimeType) {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-// ========== MAIN TRACE BUTTON ==========
+// ========== MAIN ==========
 
 document.getElementById('btnTrace').addEventListener('click', async () => {
-    const input = document.getElementById('mainInput').value.trim();
-    
-    if (!input) {
-        showToast('Please enter a TX ID or Kaspa address');
-        return;
+  const input = document.getElementById('mainInput').value.trim();
+  if (!input) { showToast('Please enter a TX ID or address'); return; }
+  
+  apiCallCount = 0;
+  document.getElementById('btnTrace').disabled = true;
+  document.getElementById('btnCancel').style.display = 'inline-block';
+  
+  if (currentAbortController) currentAbortController.abort();
+  currentAbortController = new AbortController();
+  const signal = currentAbortController.signal;
+  
+  updateProgress('Tracing...', 'Connecting to Kaspa API', 10);
+  
+  try {
+    if (/^[a-f0-9]{64}$/.test(input)) {
+      await traceLifecycleSingle(input, 0, signal);
+    } else if (/^kaspa:[a-z0-9]{61,63}$/.test(input)) {
+      await traceFromAddress(input, signal);
+    } else {
+      document.getElementById('resultPanel').innerHTML = '<p style="color:#f87171;">Invalid input. Enter a TX ID or Kaspa address.</p>';
     }
-    
-    document.getElementById('btnTrace').disabled = true;
-    document.getElementById('btnCancel').style.display = 'inline-block';
-    
-    updateProgress('Tracing coin lineage...', 'Contacting server', 20);
-    
-    try {
-        const data = await traceAPI(input);
-        renderResults(data);
-    } catch (e) {
-        if (e.name === 'AbortError') {
-            document.getElementById('resultPanel').innerHTML = '<div class="empty-state"><p style="color:var(--muted);">⚠️ Trace cancelled.</p></div>';
-        } else {
-            document.getElementById('resultPanel').innerHTML = `<div class="empty-state"><p style="color:#f87171;">❌ ${e.message}</p></div>`;
-        }
-    } finally {
-        document.getElementById('btnTrace').disabled = false;
-        document.getElementById('btnCancel').style.display = 'none';
-        document.getElementById('mobileActionBar').style.display = 'none';
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      document.getElementById('resultPanel').innerHTML = `<p style="color:#f87171;">Error: ${e.message}</p>`;
     }
+  } finally {
+    document.getElementById('btnTrace').disabled = false;
+    document.getElementById('btnCancel').style.display = 'none';
+    currentAbortController = null;
+  }
 });
 
 document.getElementById('btnCancel').addEventListener('click', () => {
-    if (currentAbortController) {
-        currentAbortController.abort();
-        currentAbortController = null;
-    }
-    document.getElementById('btnTrace').disabled = false;
-    document.getElementById('btnCancel').style.display = 'none';
+  if (currentAbortController) { currentAbortController.abort(); currentAbortController = null; }
+  document.getElementById('btnTrace').disabled = false;
+  document.getElementById('btnCancel').style.display = 'none';
 });
-
-// Enter key triggers trace
-document.getElementById('mainInput').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') document.getElementById('btnTrace').click();
-});
-
-// Example badges
-document.querySelectorAll('.example-badge').forEach(badge => {
-    badge.addEventListener('click', function() {
-        const addr = this.getAttribute('data-address');
-        if (addr) {
-            document.getElementById('mainInput').value = addr;
-        }
-    });
-});
-
-// Expose to global scope
-window.switchToTrace = switchToTrace;
-window.navigateTrace = navigateTrace;
-window.toggleStep = toggleStep;
-window.copyText = copyText;
-window.exportResultsAsCSV = exportResultsAsCSV;
-window.exportResultsAsJSON = exportResultsAsJSON;
-window.exportResultsAsText = exportResultsAsText;
